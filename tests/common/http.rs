@@ -16,6 +16,7 @@ use sea_orm_migration::MigratorTrait;
 use serde_json::Value;
 
 use suprnova::auth::AuthConfig;
+use suprnova::mail::{Mail, MailFake};
 use suprnova::{
     App, Auth, AuthManager, CsrfMiddleware, EloquentUserProvider, IncludeMiddleware,
     Inertia303Middleware, MiddlewareRegistry, SessionConfig, SessionMiddleware, handle_request,
@@ -29,6 +30,7 @@ use pulsar::models::user::User;
 /// aborts the spawned loopback server on drop.
 pub struct Harness {
     _lock: tokio::sync::MutexGuard<'static, ()>,
+    pub mail: MailFake,
     server: Option<tokio::task::AbortHandle>,
 }
 
@@ -49,6 +51,7 @@ pub async fn setup() -> Harness {
         std::env::set_var("MAIL_FROM", "test@pulsar.test");
         std::env::set_var("APP_URL", "http://pulsar.test");
     }
+    let mail = Mail::fake();
 
     suprnova::Crypt::init(suprnova::EncryptionKey::generate());
 
@@ -59,6 +62,18 @@ pub async fn setup() -> Harness {
         .await
         .expect("run Pulsar migrations against sqlite::memory:");
     App::singleton(suprnova::DbConnection::from_raw(conn));
+    let db = suprnova::DB::connection().expect("DB not initialized");
+    let magnetar = suprnova::MagnetarConfig::from_sea_orm(db.inner().clone()).passkey_config(
+        suprnova::PasskeyConfig {
+            rp_id: std::env::var("PASSKEY_RP_ID").unwrap_or_else(|_| "localhost".to_string()),
+            rp_origin: std::env::var("PASSKEY_RP_ORIGIN")
+                .unwrap_or_else(|_| "http://localhost".to_string()),
+        },
+    );
+    suprnova::init_magnetar(magnetar)
+        .await
+        .expect("Failed to initialize Magnetar");
+    suprnova::rate_limit::bootstrap_default().await;
 
     App::singleton(AuthManager::new(AuthConfig::default()));
     Auth::register_provider("users", Arc::new(EloquentUserProvider::<User>::new()))
@@ -75,6 +90,7 @@ pub async fn setup() -> Harness {
 
     Harness {
         _lock: lock,
+        mail,
         server: None,
     }
 }

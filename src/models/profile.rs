@@ -69,7 +69,7 @@ impl Profile {
             <Self as Model>::create(attrs! {
                 user_id: user.id,
                 handle: default_handle(user),
-                display_name: user.name.clone(),
+                display_name: user.name.clone().unwrap_or_else(|| "Account".to_owned()),
             })
         })
         .await

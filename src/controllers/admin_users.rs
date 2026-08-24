@@ -39,7 +39,7 @@ pub async fn index(req: Request) -> Response {
 
         rows.push(AdminUserRow {
             id: user.id,
-            name: user.name.clone(),
+            name: user.name.clone().unwrap_or_else(|| "Account".to_owned()),
             email: user.email.clone(),
             verified: user.email_verified_at.is_some(),
             roles,

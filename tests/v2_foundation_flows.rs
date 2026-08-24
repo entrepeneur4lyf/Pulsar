@@ -94,14 +94,17 @@ mod v2_foundation_flows {
             .await
             .expect("lookup registered user")
             .expect("registered user exists");
-        assert_eq!(user.name, "Katherine Johnson");
+        assert_eq!(user.name.as_deref(), Some("Katherine Johnson"));
 
         let profile = Profile::find_by_user_id(user.id)
             .await
             .expect("lookup profile by user id")
             .expect("registered user has a profile");
         assert_eq!(profile.user_id, user.id);
-        assert_eq!(profile.display_name, user.name);
+        assert_eq!(
+            profile.display_name,
+            user.name.unwrap_or_else(|| "Account".to_owned())
+        );
     }
 
     #[tokio::test]
@@ -500,7 +503,7 @@ mod v2_foundation_flows {
 
         let db = DB::connection().expect("resolve test database connection");
         db.inner()
-            .execute(Statement::from_string(
+            .execute_raw(Statement::from_string(
                 DatabaseBackend::Sqlite,
                 "CREATE TRIGGER fail_profile_update \
                  BEFORE UPDATE ON profiles \
@@ -542,7 +545,7 @@ mod v2_foundation_flows {
             .await
             .expect("lookup original email")
             .expect("original user row should remain");
-        assert_eq!(reloaded.name, "Atomic Original");
+        assert_eq!(reloaded.name.as_deref(), Some("Atomic Original"));
         assert_eq!(reloaded.email, email);
         assert!(
             reloaded.is_email_verified(),
@@ -676,7 +679,7 @@ mod v2_foundation_flows {
             .await
             .expect("reload user")
             .expect("updated user exists");
-        assert_eq!(updated.name, "Grace Account");
+        assert_eq!(updated.name.as_deref(), Some("Grace Account"));
 
         let profile = Profile::find_by_user_id(updated.id)
             .await
@@ -1193,7 +1196,7 @@ mod v2_foundation_flows {
         verified_admin("Taxonomy Race Admin", "taxonomy-race@pulsar.test").await;
         let db = DB::connection().expect("resolve test database connection");
         db.inner()
-            .execute(Statement::from_string(
+            .execute_raw(Statement::from_string(
                 DatabaseBackend::Sqlite,
                 "CREATE TRIGGER fail_category_slug_unique \
                  BEFORE INSERT ON categories \

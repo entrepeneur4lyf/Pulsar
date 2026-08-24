@@ -39,7 +39,7 @@ use chrono::Utc;
 use serde_json::{Value, json};
 
 use suprnova::MustVerifyEmail;
-use suprnova::mail::{Mail, MailFake};
+use suprnova::mail::MailFake;
 
 use common::{Client, setup};
 use pulsar::models::user::User;
@@ -118,7 +118,8 @@ async fn register_then_verify_email_over_http() {
 
     // Register. The success path is `redirect!("/dashboard")` - the literal
     // Location pins the framework's literal-redirect dispatch fix.
-    let fake = Mail::fake();
+    let fake = &harness.mail;
+    let before = fake.count();
     let resp = client
         .post_json(
             "/register",
@@ -135,8 +136,8 @@ async fn register_then_verify_email_over_http() {
 
     // A verification mail was captured for the new address.
     fake.assert_sent_to("grace@pulsar.test");
-    assert_eq!(fake.count(), 1, "exactly one verification mail");
-    let token = token_from_fake(&fake);
+    assert_eq!(fake.count(), before + 1, "exactly one verification mail");
+    let token = token_from_fake(fake);
 
     // Logged in but unverified: the `verified` gate bounces to the notice.
     let resp = client.get("/dashboard").await;
@@ -174,38 +175,46 @@ async fn resend_verification_notification_over_http() {
     let mut harness = setup().await;
     let addr = harness.spawn_app().await;
     let mut client = Client::new(addr);
+    let fake = &harness.mail;
 
-    // Register (logged in, unverified). Swallow the initial mail in its own
-    // fake so the resend capture below is unambiguous.
+    // Register (logged in, unverified) while keeping the shared fake alive so
+    // the resend assertions can compare count deltas on the same transport.
     let resp = client.get("/register").await;
     assert_eq!(resp.status, 200);
-    {
-        let _initial = Mail::fake();
-        let resp = client
-            .post_json(
-                "/register",
-                json!({
-                    "name": "Ada Lovelace",
-                    "email": "ada@pulsar.test",
-                    "password": "oldpass1!",
-                    "password_confirmation": "oldpass1!",
-                }),
-            )
-            .await;
-        assert_eq!(resp.status, 302, "register: {}", resp.body);
-    }
+    let initial_before = fake.count();
+    let resp = client
+        .post_json(
+            "/register",
+            json!({
+                "name": "Ada Lovelace",
+                "email": "ada@pulsar.test",
+                "password": "oldpass1!",
+                "password_confirmation": "oldpass1!",
+            }),
+        )
+        .await;
+    assert_eq!(resp.status, 302, "register: {}", resp.body);
+    assert_eq!(
+        fake.count(),
+        initial_before + 1,
+        "register must capture the initial verification mail"
+    );
 
     // Resend: a fresh link is mailed to the logged-in unverified user.
-    let fake = Mail::fake();
+    let resend_before = fake.count();
     let resp = client
         .post_json("/email/verification-notification", json!({}))
         .await;
     assert_eq!(resp.status, 302, "resend must redirect: {}", resp.body);
     assert_eq!(resp.location(), "/verify-email");
-    assert_eq!(fake.count(), 1, "resend must capture a fresh mail");
+    assert_eq!(
+        fake.count(),
+        resend_before + 1,
+        "resend must capture a fresh mail"
+    );
     fake.assert_sent_to("ada@pulsar.test");
     assert!(
-        !token_from_fake(&fake).is_empty(),
+        !token_from_fake(fake).is_empty(),
         "the resent link carries a token"
     );
 }
@@ -219,6 +228,7 @@ async fn password_reset_over_http_with_anti_enumeration() {
     let mut harness = setup().await;
     let addr = harness.spawn_app().await;
     let mut client = Client::new(addr);
+    let fake = &harness.mail;
 
     // Seed a verified user with a known password.
     let mut ada = User::create("Ada Reset", "ada@x.com", "oldpass1!")
@@ -231,25 +241,29 @@ async fn password_reset_over_http_with_anti_enumeration() {
     assert_eq!(resp.status, 200, "GET /forgot-password must render");
 
     // Known email → a reset mail is captured.
-    let fake = Mail::fake();
+    let known_before = fake.count();
     let resp = client
         .post_json("/forgot-password", json!({ "email": "ada@x.com" }))
         .await;
     assert_eq!(resp.status, 302, "send-link must redirect: {}", resp.body);
     assert_eq!(resp.location(), "/forgot-password");
     fake.assert_sent_to("ada@x.com");
-    assert_eq!(fake.count(), 1);
-    let token = token_from_fake(&fake);
+    assert_eq!(fake.count(), known_before + 1);
+    let token = token_from_fake(fake);
 
     // Unknown email → NO new mail, and the *same* neutral redirect
     // (anti-enumeration: the wire response is indistinguishable).
-    let fake2 = Mail::fake();
+    let unknown_before = fake.count();
     let resp = client
         .post_json("/forgot-password", json!({ "email": "nobody@x.com" }))
         .await;
     assert_eq!(resp.status, 302, "unknown email gets the same 302");
     assert_eq!(resp.location(), "/forgot-password");
-    assert_eq!(fake2.count(), 0, "unknown email must send nothing");
+    assert_eq!(
+        fake.count(),
+        unknown_before,
+        "unknown email must send nothing"
+    );
 
     // The reset form renders with the token threaded through.
     let resp = client.get(&format!("/reset-password?token={token}")).await;
@@ -358,7 +372,8 @@ async fn profile_update_password_and_delete_over_http() {
 
     // --- PATCH /profile: change name + email. The email change nulls the
     //     verification stamp and re-sends the link to the NEW address.
-    let fake = Mail::fake();
+    let fake = &harness.mail;
+    let before = fake.count();
     let resp = client
         .patch_json(
             "/profile",
@@ -374,12 +389,20 @@ async fn profile_update_password_and_delete_over_http() {
     assert_eq!(resp.location(), "/profile");
 
     let updated = reload("edsger.new@x.com").await;
-    assert_eq!(updated.name, "Edsger Dijkstra", "name saved");
+    assert_eq!(
+        updated.name.as_deref(),
+        Some("Edsger Dijkstra"),
+        "name saved"
+    );
     assert!(
         !updated.is_email_verified(),
         "changing the email must null email_verified_at"
     );
-    assert_eq!(fake.count(), 1, "email change re-sends a verification link");
+    assert_eq!(
+        fake.count(),
+        before + 1,
+        "email change re-sends a verification link"
+    );
     fake.assert_sent_to("edsger.new@x.com");
 
     // The verified gate kicks back in after the email change.
