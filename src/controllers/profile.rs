@@ -376,7 +376,7 @@ pub async fn update(req: Request) -> Response {
         Err(FormFailure::Response(resp)) => return Err(*resp),
     };
 
-    let mut user = current_user().await?;
+    let user = current_user().await?;
     let mut profile = Profile::ensure_for_user(&user).await?;
     let current_handle = profile.handle.clone();
     let email_changed = user.email != form.email;

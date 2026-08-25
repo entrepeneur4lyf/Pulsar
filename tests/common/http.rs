@@ -12,7 +12,6 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use sea_orm_migration::MigratorTrait;
 use serde_json::Value;
 
 use suprnova::auth::AuthConfig;
@@ -23,7 +22,6 @@ use suprnova::{
 };
 
 use pulsar::middleware::LoggingMiddleware;
-use pulsar::migrations::Migrator;
 use pulsar::models::user::User;
 
 /// Held-for-the-test guard: keeps global container bindings installed and
@@ -53,27 +51,7 @@ pub async fn setup() -> Harness {
     }
     let mail = Mail::fake();
 
-    suprnova::Crypt::init(suprnova::EncryptionKey::generate());
-
-    let conn = sea_orm::Database::connect("sqlite::memory:")
-        .await
-        .expect("connect sqlite::memory:");
-    Migrator::up(&conn, None)
-        .await
-        .expect("run Pulsar migrations against sqlite::memory:");
-    App::singleton(suprnova::DbConnection::from_raw(conn));
-    let db = suprnova::DB::connection().expect("DB not initialized");
-    let magnetar = suprnova::MagnetarConfig::from_sea_orm(db.inner().clone()).passkey_config(
-        suprnova::PasskeyConfig {
-            rp_id: std::env::var("PASSKEY_RP_ID").unwrap_or_else(|_| "localhost".to_string()),
-            rp_origin: std::env::var("PASSKEY_RP_ORIGIN")
-                .unwrap_or_else(|_| "http://localhost".to_string()),
-        },
-    );
-    suprnova::init_magnetar(magnetar)
-        .await
-        .expect("Failed to initialize Magnetar");
-    suprnova::rate_limit::bootstrap_default().await;
+    super::fresh_magnetar_database().await;
 
     App::singleton(AuthManager::new(AuthConfig::default()));
     Auth::register_provider("users", Arc::new(EloquentUserProvider::<User>::new()))
